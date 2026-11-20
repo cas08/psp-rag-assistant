@@ -21,17 +21,22 @@ class Answer:
     chunks: list[Chunk] = field(default_factory=list)
 
 
-def ask(question: str, use_rag: bool = True, k: int = DEFAULT_K, model: str = llm.OLLAMA_MODEL) -> Answer:
+def ask(question: str, use_rag: bool = True, k: int = DEFAULT_K, model: str = llm.OLLAMA_MODEL,
+        temperature: float = 0.0) -> Answer:
+    """temperature: randomness of word choice. 0 = the same answer every time (used for evaluation);
+    higher = more varied. It does not decide whether the model sticks to the docs; the prompt and context do."""
     question = question.strip()
     if not question:
         raise ValueError("question must not be empty")
     started = time.perf_counter()
     if use_rag:
         chunks = retrieve(question, k)
-        text = llm.chat(prompts.RAG_SYSTEM, prompts.rag_user_message(question, chunks), model=model)
+        text = llm.chat(prompts.RAG_SYSTEM, prompts.rag_user_message(question, chunks),
+                        model=model, temperature=temperature)
     else:
         chunks = []
-        text = llm.chat(prompts.NO_RAG_SYSTEM, prompts.no_rag_user_message(question), model=model)
+        text = llm.chat(prompts.NO_RAG_SYSTEM, prompts.no_rag_user_message(question),
+                        model=model, temperature=temperature)
     return Answer(question, text, use_rag, model, round(time.perf_counter() - started, 2), chunks)
 
 
