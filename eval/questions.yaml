@@ -1,0 +1,124 @@
+# Test set: questions about the Qorvex Pay API with reference answers.
+#
+# facts:  key facts a correct answer must contain. Each fact is a list of alternative spellings
+#         (case-insensitive substrings); a fact counts as present if any alternative is found.
+#         Used only as an automatic hint — the final verdict is made by people (verdict_manual).
+# trap:   what a model without the docs is likely to invent. Questions with a trap check
+#         hallucinated endpoints / parameters on purpose.
+# evidence: exact text from docs/ that retrieval must return (any alternative of each item);
+#         used to measure retrieval recall separately from the model.
+
+- id: q01
+  question: How long after capture can I still refund a payment?
+  reference: 45 days after the payment is captured. After that the API returns HTTP 422 with refund_window_closed.
+  source: 06-refunds
+  facts: [["45 days", "45-day", "45 calendar"], ["refund_window_closed"]]
+  evidence: [["within 45 days"]]
+
+- id: q02
+  question: What is the maximum length of statement_descriptor?
+  reference: 18 characters (Latin letters, digits, spaces and . - *). The FAQ says 22, but the parameter table is authoritative.
+  source: 04-payments
+  facts: [["18"]]
+  evidence: [["Max 18 characters"]]
+  trap: The FAQ contradicts the parameter table (22 vs 18); generic knowledge suggests 22 (Stripe).
+
+- id: q03
+  question: How long can an authorized payment wait before I capture it?
+  reference: 120 hours. After that it is released automatically and moves to status expired (event payment.auth_expired); it cannot be captured.
+  source: 04-payments
+  facts: [["120 hours", "120-hour", "120 h"], ["expired"]]
+  evidence: [["within 120 hours"]]
+
+- id: q04
+  question: Can I partially refund a payment made in UAH?
+  reference: No. UAH payments can only be refunded in full, in a single refund. A partial amount is rejected with HTTP 422 refund_amount_invalid. Workaround — refund in full and create a new payment for the part the customer keeps.
+  source: 06-refunds
+  facts: [["full"], ["refund_amount_invalid"]]
+  evidence: [["Payments in UAH can only be refunded"]]
+
+- id: q05
+  question: Which endpoint do I call to cancel a refund that I created by mistake?
+  reference: There is no such endpoint. A refund cannot be cancelled or edited once created, even while pending; support cannot stop it either.
+  source: 06-refunds
+  facts: [["no endpoint", "not possible", "cannot be cancel", "can't be cancel", "cannot cancel", "can not be cancel", "there is no"]]
+  evidence: [["cannot be cancelled once it has been created"]]
+  trap: Invented endpoint such as POST /v2/refunds/{id}/cancel.
+
+- id: q06
+  question: The customer cancelled the order before shipping. How do I void the authorization?
+  reference: Call POST /v2/payments/{id}/release (no parameters). Only payments in status authorized can be released; otherwise 409 payment_not_releasable. If already captured, refund instead.
+  source: 04-payments
+  facts: [["/release"]]
+  evidence: [["POST /v2/payments/{id}/release", "`/v2/payments/{id}/release`"]]
+  trap: Invented endpoint such as /void or /cancel.
+
+- id: q07
+  question: Which HTTP header carries the API key, and what error do I get if it is wrong?
+  reference: Qx-Api-Key header. A missing, invalid, revoked or wrong-environment key gives HTTP 401 with error code api_key_invalid.
+  source: 01-authentication
+  facts: [["Qx-Api-Key"], ["401"], ["api_key_invalid"]]
+  evidence: [["Qx-Api-Key"], ["api_key_invalid"]]
+  trap: 'Invented "Authorization: Bearer" header.'
+
+- id: q08
+  question: How do I charge 1,500 Japanese yen?
+  reference: Send amount 1500 with currency JPY. JPY has no minor units (exponent 0), so do not multiply by 100.
+  source: 03-amounts-and-currencies
+  facts: [["1500", "1,500"], ["not multiply", "no minor", "don't multiply", "do not multiply", "without multiplying", "exponent 0", "exponent of 0", "zero"]]
+  evidence: [["no minor units"]]
+  trap: Sending 150000 (multiplying by 100).
+
+- id: q09
+  question: How do I verify that a webhook really came from Qorvex Pay?
+  reference: Compute HMAC-SHA256 with the endpoint's signing secret over "<Qx-Timestamp>.<raw body>", compare with the Qx-Signature header using a constant-time comparison, and reject deliveries whose timestamp differs from server time by more than 180 seconds.
+  source: 07-webhooks
+  facts: [["HMAC-SHA256", "HMAC SHA256", "HMAC-SHA-256", "sha256"], ["Qx-Signature"], ["Qx-Timestamp"], ["180"]]
+  evidence: [["HMAC-SHA256"], ["180 seconds"]]
+  trap: Invented header names (X-Qorvex-Signature) or tolerance (5 minutes).
+
+- id: q10
+  question: My webhook endpoint was down for a day. How can I ask Qorvex Pay to resend the missed events?
+  reference: There is no resend endpoint and support cannot trigger redelivery. Fetch missed events with GET /v2/events (types, created_from/created_to filters); events are kept for 14 days.
+  source: 07-webhooks
+  facts: [["/v2/events"], ["14 days"]]
+  evidence: [["There is no endpoint to resend"], ["available for 14 days"]]
+  trap: Invented endpoint such as POST /v2/events/{id}/resend.
+
+- id: q11
+  question: I got HTTP 429. How long should I wait before retrying?
+  reference: Wait the time in the Qx-Retry-In response header, which is in milliseconds (e.g. 850 = 0.85 s), plus a small random jitter; retry POSTs with the same Qx-Idempotency-Token.
+  source: 10-rate-limits
+  facts: [["Qx-Retry-In"], ["millisecond"]]
+  evidence: [["`Qx-Retry-In` header"]]
+  trap: Retry-After header in seconds.
+
+- id: q12
+  question: After I roll a secret API key, how long does the old key keep working?
+  reference: 36 hours, then it is revoked (requests fail with 401). "Roll and revoke now" revokes the old key immediately.
+  source: 01-authentication
+  facts: [["36 hours", "36-hour", "36 h"]]
+  evidence: [["keeps working for 36 hours"]]
+
+- id: q13
+  question: Which sandbox test card triggers a 3-D Secure challenge, and what code completes it?
+  reference: Test card 9990 0000 0000 0326 (Visa) triggers a challenge; enter the one-time code 0610 to succeed. Any other code fails authentication.
+  source: 11-testing, 05-3ds
+  facts: [["0326"], ["0610"]]
+  evidence: [["0326"], ["`0610`"]]
+  trap: Stripe-like card 4000 0027 6000 3184 or a made-up code.
+
+- id: q14
+  question: How long is an idempotency token stored, and what happens if I reuse it with a different request body?
+  reference: Tokens are stored for 72 hours. Reusing a token with a different body or endpoint returns HTTP 422 idempotency_token_reused.
+  source: 02-request-conventions
+  facts: [["72 hours", "72-hour", "72 h"], ["idempotency_token_reused"]]
+  evidence: [["stored for 72 hours"], ["idempotency_token_reused"]]
+  trap: Stripe's 24 hours.
+
+- id: q15
+  question: When does the daily settlement batch close, and when is the money paid out?
+  reference: The batch closes at 16:30 Europe/Kyiv on business days (13:30 UTC summer / 14:30 UTC winter). Funds become available and, in automatic mode, are paid out T+4 business days after the batch.
+  source: 09-settlement-and-payouts
+  facts: [["16:30"], ["T+4", "4 business days", "four business days"]]
+  evidence: [["16:30"], ["T+4"]]
