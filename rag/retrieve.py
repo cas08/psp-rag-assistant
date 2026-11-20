@@ -38,7 +38,7 @@ from chromadb.utils import embedding_functions
 ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = ROOT / "docs"
 INDEX_DIR = ROOT / "index"
-COLLECTION = "qorvex_docs_v2"  # bump when chunking changes, so old local indexes are rebuilt automatically
+COLLECTION = "qorvex_docs_v3"  # bump when chunking changes, so old local indexes are rebuilt automatically
 MAX_TOKENS = 230  # all-MiniLM-L6-v2 reads only the first 256 tokens of a text, so longer chunks are split
 MIN_WORDS = 25    # a shorter piece is merged into the next piece of the same page
 HEADING = re.compile(r"^#{2,3} ")
@@ -159,23 +159,33 @@ def split_long(parts: list[str], budget: int) -> list[str]:
 
 
 def chunk_doc(path: Path) -> list[dict]:
+    """Chunks of one page. A piece shorter than MIN_WORDS never moves to an unrelated section:
+    it joins the previous chunk of its own section if that fits, or stays a chunk of its own.
+    Only a short parent intro ("## Settlement batches" + one line) moves into its first ### subsection."""
     meta, body = read_doc(path)
     title = meta["title"]
+    blocks = heading_blocks(body)
     chunks, carry = [], ""
-    for heading, lines in heading_blocks(body):
+    for index, (heading, lines) in enumerate(blocks):
         prefix = f"{title} > {heading or title}\n\n"
+        budget = MAX_TOKENS - token_count(prefix)
         parts = paragraphs(lines)
-        if carry:  # a short piece left over from the previous block goes in front of this block's text
+        if carry:  # the short intro of the parent section goes in front of its first subsection
             parts, carry = [carry, *parts], ""
-        for piece in split_long(parts, MAX_TOKENS - token_count(prefix)):
+        pieces = split_long(parts, budget)
+        next_heading = blocks[index + 1][0] if index + 1 < len(blocks) else ""
+        block_chunks = []
+        for piece in pieces:
             if word_count(piece) < MIN_WORDS:
-                carry = piece  # too short to stand alone, e.g. a heading followed by a sub-heading
-                continue
-            carry = ""
-            chunks.append({"text": f"{prefix}{piece}", "section_id": meta["section_id"],
-                           "heading": heading or title, "api_version": meta["api_version"]})
-    if carry and chunks:
-        chunks[-1] = {**chunks[-1], "text": f"{chunks[-1]['text']}\n\n{carry}"}
+                if len(pieces) == 1 and heading and next_heading.startswith(f"{heading} > "):
+                    carry = piece
+                    continue
+                if block_chunks and token_count(f"{block_chunks[-1]}\n\n{piece}") <= MAX_TOKENS:
+                    block_chunks[-1] = f"{block_chunks[-1]}\n\n{piece}"
+                    continue
+            block_chunks.append(f"{prefix}{piece}")
+        chunks += [{"text": text, "section_id": meta["section_id"], "heading": heading or title,
+                    "api_version": meta["api_version"]} for text in block_chunks]
     return chunks
 
 
@@ -274,6 +284,25 @@ def bm25_ranking(query: str) -> list[str]:
 
 # ── search ───────────────────────────────────────────────────────────────
 
+def join_section(texts: list[str]) -> str:
+    """Re-assemble the chunks of one section: drop each chunk's repeated title line, and when a table was split
+    across chunks, drop the repeated header rows so it reads as one table again."""
+    joined = texts[0]
+    for text in texts[1:]:
+        body = text.split("\n\n", 1)[1]
+        body_lines = body.splitlines()
+        last_lines = joined.splitlines()
+        table_start = next((i for i in range(len(last_lines) - 1, 0, -1)
+                            if last_lines[i].startswith("|---") and last_lines[i - 1].startswith("|")), None)
+        continues_table = (table_start is not None and last_lines[-1].startswith("|")
+                           and body_lines[:2] == last_lines[table_start - 1:table_start + 1])
+        if continues_table:
+            joined += "\n" + "\n".join(body_lines[2:])
+        else:
+            joined += "\n\n" + body
+    return joined
+
+
 def retrieve(query: str, k: int = 5, method: str = "hybrid", expand: bool = True) -> list[Chunk]:
     """Return the k pieces of docs/ most relevant to the query, best first.
 
@@ -315,8 +344,7 @@ def retrieve(query: str, k: int = 5, method: str = "hybrid", expand: bool = True
                 continue
             seen.add(section(meta))
             parts = sorted((m["position"], d) for d, m, _ in by_id.values() if section(m) == section(meta))
-            first, *rest = [d for _, d in parts]
-            doc = "\n\n".join([first, *(d.split("\n\n", 1)[1] for d in rest)])  # drop the repeated title line
+            doc = join_section([d for _, d in parts])
         results.append(Chunk(text=doc, section_id=meta["section_id"], heading=meta["heading"],
                              api_version=meta["api_version"], score=round(similarity, 4)))
         if len(results) == k:
